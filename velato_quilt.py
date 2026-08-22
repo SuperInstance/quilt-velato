@@ -160,10 +160,10 @@ def parse_midi(data: bytes) -> List[VelatoNote]:
         running_status = 0
         active_notes = {}  # (pitch, channel) -> start_tick
 
-        while pos < track_end:
+        while pos < track_end and pos < len(data):
             # Variable-length quantity
             delta = 0
-            while True:
+            while pos < len(data):
                 byte = data[pos]
                 pos += 1
                 delta = (delta << 7) | (byte & 0x7F)
@@ -172,15 +172,48 @@ def parse_midi(data: bytes) -> List[VelatoNote]:
             current_tick += delta
 
             # Status byte
+            if pos >= len(data):
+                break
             if data[pos] & 0x80:
                 status = data[pos]
                 pos += 1
+                running_status = status
             else:
                 status = running_status
+
+            # Meta events must be checked BEFORE masking (0xFF & 0xF0 = 0xF0)
+            if status == 0xFF:
+                if pos >= len(data):
+                    break
+                meta_type = data[pos]
+                pos += 1
+                length = 0
+                while pos < len(data):
+                    byte = data[pos]
+                    pos += 1
+                    length = (length << 7) | (byte & 0x7F)
+                    if not (byte & 0x80):
+                        break
+                pos += length
+                continue
+
+            # SysEx
+            if status in (0xF0, 0xF7):
+                length = 0
+                while pos < len(data):
+                    byte = data[pos]
+                    pos += 1
+                    length = (length << 7) | (byte & 0x7F)
+                    if not (byte & 0x80):
+                        break
+                pos += length
+                continue
 
             event = status & 0xF0
 
             if event == 0x90:  # Note on
+                if pos + 2 > len(data):
+                    break
                 pitch = data[pos]
                 velocity = data[pos+1]
                 pos += 2
@@ -197,6 +230,8 @@ def parse_midi(data: bytes) -> List[VelatoNote]:
                         channel=status & 0x0F,
                     ))
             elif event == 0x80:  # Note off
+                if pos + 2 > len(data):
+                    break
                 pitch = data[pos]
                 velocity = data[pos+1]
                 pos += 2
@@ -212,26 +247,6 @@ def parse_midi(data: bytes) -> List[VelatoNote]:
                 pos += 1
             elif event in (0xA0, 0xB0, 0xE0):  # Poly aftertouch / control / pitch bend
                 pos += 2
-            elif event == 0xFF:  # Meta event
-                meta_type = data[pos]
-                pos += 1
-                length = 0
-                while True:
-                    byte = data[pos]
-                    pos += 1
-                    length = (length << 7) | (byte & 0x7F)
-                    if not (byte & 0x80):
-                        break
-                pos += length
-            elif event == 0xF0 or event == 0xF7:  # SysEx
-                length = 0
-                while True:
-                    byte = data[pos]
-                    pos += 1
-                    length = (length << 7) | (byte & 0x7F)
-                    if not (byte & 0x80):
-                        break
-                pos += length
             else:
                 # Unknown, skip
                 pos += 2
